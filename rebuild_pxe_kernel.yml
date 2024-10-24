@@ -1,0 +1,66 @@
+---
+- name: Rebuild PXE kernel and initramfs with NFS and RDMA modules
+  hosts: all
+  connection: local
+  become: yes
+  vars:
+    ansible_python_interpreter: /usr/bin/python3.12  # Replace with the path to Python 3.12
+  tasks:
+    - name: Ensure nfs-utils and @infiniband packages are installed
+      ansible.builtin.yum:
+        name:
+          - nfs-utils
+          - "@infiniband"
+        state: present
+
+    - name: Get the current running kernel version
+      ansible.builtin.shell: uname -r
+      register: current_kernel
+
+    - name: Set kernel and initramfs paths
+      set_fact:
+        kernel_version: "{{ current_kernel.stdout }}"
+        kernel_source: "/boot/vmlinuz-{{ current_kernel.stdout }}"
+        initramfs_source: "/boot/initramfs-{{ current_kernel.stdout }}.img"
+        kernel_dest: "/tftpboot/pxelinux/vmlinuz-{{ current_kernel.stdout }}"
+        initramfs_dest: "/tftpboot/pxelinux/initramfs-{{ current_kernel.stdout }}.img"
+
+    - name: Ensure /tftpboot/pxelinux directory exists
+      ansible.builtin.file:
+        path: /tftpboot/pxelinux
+        state: directory
+        mode: '0755'
+
+    - name: Copy the kernel to /tftpboot/pxelinux
+      ansible.builtin.copy:
+        src: "{{ kernel_source }}"
+        dest: "{{ kernel_dest }}"
+        mode: '0644'
+      register: kernel_copy_result
+
+    - name: Copy the initramfs to /tftpboot/pxelinux
+      ansible.builtin.copy:
+        src: "{{ initramfs_source }}"
+        dest: "{{ initramfs_dest }}"
+        mode: '0644'
+      register: initramfs_copy_result
+
+    - name: Rebuild the initramfs with NFS and RDMA modules
+      dracut:
+        name: "{{ initramfs_dest }}"
+        kernel: "{{ kernel_version }}"
+        add_dracut_modules:
+          - nfs
+          - rdma
+        force: yes
+      when: kernel_copy_result.changed or initramfs_copy_result.changed
+
+    - name: Verify if initramfs has been built
+      ansible.builtin.stat:
+        path: "{{ initramfs_dest }}"
+      register: initramfs_check
+
+    - name: Ensure initramfs was successfully built
+      ansible.builtin.fail:
+        msg: "Failed to rebuild initramfs"
+      when: not initramfs_check.stat.exists
